@@ -1597,23 +1597,37 @@ function toggleMusic() {
     isPlaying = false;
     fab.classList.remove('playing');
     fab.textContent = '🎵';
-  } else {
-    const settings = getMusicSettings();
-    if (!player.src || player.src === window.location.href) {
+    updateMusicStatus();
+    return;
+  }
+
+  const settings = getMusicSettings();
+
+  // Jika tidak ada src atau src tidak valid, pakai dari settings
+  if (!player.src || player.src === window.location.href || player.src.startsWith('blob:')) {
+    if (settings.url && !settings.url.startsWith('blob:') && !settings.url.startsWith('file://')) {
       player.src = settings.url;
+    } else {
+      // Fallback ke preset pertama jika URL tersimpan tidak valid
+      const fallbackUrl = MUSIC_PRESETS[0].url;
+      player.src = fallbackUrl;
+      settings.url = fallbackUrl;
+      settings.activePreset = 0;
+      saveMusicSettings(settings);
+      document.getElementById('musicUrlInput').value = fallbackUrl;
+      renderPresets();
     }
-    player.volume = settings.volume / 100;
-    player.play().then(() => {
+  }
+
+  player.volume = settings.volume / 100;
+  player.play()
+    .then(() => {
       isPlaying = true;
       fab.classList.add('playing');
       fab.textContent = '🎶';
       updateMusicStatus();
-    }).catch(e => {
-      console.warn('Play failed:', e);
-      alert('Gagal memutar musik. Periksa URL atau coba preset lain 🎵');
-    });
-  }
-  updateMusicStatus();
+    })
+    .catch(err => handlePlayError(err));
 }
 
 function toggleMusicPanel() {
@@ -1660,19 +1674,146 @@ function selectPreset(idx) {
   }
 }
 
+/**
+ * Validasi URL musik yang dimasukkan user.
+ * Tolak: file://, http:// (harus https), youtube, youtu.be, spotify, soundcloud
+ * Terima: .mp3 .wav .ogg .m4a .aac direct link atau URL dengan Content-Type audio
+ * @param {string} url - URL yang akan divalidasi
+ * @returns {{ valid: boolean, message: string }} Hasil validasi
+ */
+function validateMusicUrl(url) {
+  if (!url || url.trim() === '') {
+    return { valid: false, message: '❌ URL tidak boleh kosong.' };
+  }
+
+  // Tolak file:// protocol
+  if (url.startsWith('file://')) {
+    return { valid: false, message: '❌ URL file:// tidak didukung di website. Gunakan link https:// langsung ke file audio.' };
+  }
+
+  // Tolak http:// (mixed content akan diblokir browser di GitHub Pages yang HTTPS)
+  if (url.startsWith('http://')) {
+    return { valid: false, message: '❌ URL harus menggunakan https:// (karena website ini di-host dengan HTTPS). URL http:// akan diblokir browser.' };
+  }
+
+  // Pastikan menggunakan https://
+  if (!url.startsWith('https://')) {
+    return { valid: false, message: '❌ URL harus diawali dengan https://' };
+  }
+
+  try {
+    const parsed = new URL(url);
+
+    // Tolak domain YouTube
+    if (parsed.hostname.includes('youtube.com') || parsed.hostname.includes('youtu.be')) {
+      return { valid: false, message: '❌ Link YouTube tidak bisa digunakan. Gunakan direct URL ke file audio (.mp3, .wav, dll).' };
+    }
+
+    // Tolak domain Spotify
+    if (parsed.hostname.includes('spotify.com')) {
+      return { valid: false, message: '❌ Link Spotify tidak bisa digunakan. Gunakan direct URL ke file audio (.mp3, .wav, dll).' };
+    }
+
+    // Tolak domain SoundCloud
+    if (parsed.hostname.includes('soundcloud.com')) {
+      return { valid: false, message: '❌ Link SoundCloud tidak bisa digunakan. Gunakan direct URL ke file audio (.mp3, .wav, dll).' };
+    }
+
+  } catch (e) {
+    return { valid: false, message: '❌ Format URL tidak valid.' };
+  }
+
+  // Jika URL memiliki ekstensi audio yang dikenal, langsung valid
+  const audioExtensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.opus'];
+  const hasAudioExt = audioExtensions.some(ext => url.toLowerCase().includes(ext));
+  if (!hasAudioExt) {
+    // Tidak punya ekstensi audio — tapi mungkin tetap bisa (streaming URL).
+    // Kita izinkan saja, nanti HTML5 Audio yang menentukan saat play.
+    return { valid: true, message: '⚠️ URL tidak memiliki ekstensi audio (.mp3, .wav, dll). Mungkin tetap bisa diputar jika server mengembalikan audio.' };
+  }
+
+  return { valid: true, message: '✅ URL audio valid.' };
+}
+
+/**
+ * Mendapatkan pesan error yang user-friendly dari MediaError
+ * @param {MediaError} mediaError - Error dari HTML5 Audio API
+ * @returns {string} Pesan error yang bisa ditampilkan ke user
+ */
+function getAudioErrorMessage(mediaError) {
+  if (!mediaError) return 'Terjadi kesalahan tidak diketahui.';
+  const codes = {
+    1: '🚫 Pemutaran dibatalkan. Mungkin user menekan tombol stop.',
+    2: '🔇 Gagal memuat audio. Periksa koneksi internet atau URL mungkin rusak.',
+    3: '🔇 Audio gagal didekode. Format file mungkin tidak didukung browser.',
+    4: '🚫 URL audio tidak dapat dimuat. Server mungkin offline atau URL salah.'
+  };
+  return codes[mediaError.code] || '🔇 Terjadi kesalahan saat memutar audio.';
+}
+
+/**
+ * Menangani error saat play() gagal — menampilkan alert yang jelas
+ * @param {Error} err - Error object dari Promise.rejection
+ */
+function handlePlayError(err) {
+  console.warn('🔇 Play error:', err);
+
+  const player = document.getElementById('musicPlayer');
+  const fab = document.getElementById('musicFab');
+
+  // Reset state play
+  isPlaying = false;
+  fab.classList.remove('playing');
+  fab.textContent = '🎵';
+  updateMusicStatus();
+
+  // Ambil pesan error dari MediaError jika ada
+  let errorMsg = getAudioErrorMessage(player.error);
+
+  // Tambahkan info tambahan untuk kasus umum
+  if (player.src && player.src.startsWith('blob:')) {
+    errorMsg += '\n\n💡 File lokal hanya bisa diputar selama halaman masih terbuka. Refresh menghapus akses ke file.';
+  } else if (player.src && player.src.startsWith('file://')) {
+    errorMsg += '\n\n💡 URL file:// tidak didukung di GitHub Pages. Gunakan link https:// ke file audio.';
+  }
+
+  alert('🔇 Gagal memutar musik.\n\n' + errorMsg);
+}
+
 function applyMusicUrl() {
   const url = document.getElementById('musicUrlInput').value.trim();
-  if (!url) return;
+  if (!url) {
+    alert('❌ Masukkan URL musik terlebih dahulu.');
+    return;
+  }
+
+  // Validasi URL
+  const validation = validateMusicUrl(url);
+  if (!validation.valid) {
+    alert(validation.message);
+    return;
+  }
+
   const settings = getMusicSettings();
   settings.url = url;
   settings.activePreset = -1;
+  // Hapus fileName jika sebelumnya file lokal
+  if (settings.fileName) delete settings.fileName;
   saveMusicSettings(settings);
+
+  // Reset tampilan file upload
+  document.getElementById('fileNameDisplay').textContent = 'Belum ada file';
+
   document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
   const player = document.getElementById('musicPlayer');
   player.src = url;
   if (isPlaying) {
-    player.play().catch(() => {});
+    player.play().catch(err => handlePlayError(err));
   }
+
+  // Tampilkan status
+  const status = document.getElementById('musicStatus');
+  status.textContent = '✅ URL tersimpan. Tekan 🎵 untuk memutar.';
 }
 
 function setVolume(val) {
@@ -1691,10 +1832,34 @@ document.getElementById('musicPanelOverlay').addEventListener('click', function(
   }
 });
 
+/**
+ * Inisialisasi sistem musik saat halaman dimuat.
+ * Memeriksa validitas URL tersimpan, fallback ke preset pertama jika tidak valid.
+ */
 function initMusic() {
   const settings = getMusicSettings();
   const player = document.getElementById('musicPlayer');
-  player.src = settings.url;
+
+  // Periksa apakah URL tersimpan valid (bukan blob/file:///kosong)
+  const isInvalidUrl = !settings.url ||
+    settings.url.startsWith('blob:') ||
+    settings.url.startsWith('file://') ||
+    settings.url === '' ||
+    (settings.url.startsWith('http://'));
+
+  if (isInvalidUrl) {
+    // Fallback ke preset pertama
+    const fallbackUrl = MUSIC_PRESETS[0].url;
+    player.src = fallbackUrl;
+    settings.url = fallbackUrl;
+    settings.activePreset = 0;
+    // Hapus properti file lokal jika ada
+    if (settings.fileName) delete settings.fileName;
+    saveMusicSettings(settings);
+  } else {
+    player.src = settings.url;
+  }
+
   player.volume = settings.volume / 100;
   renderPresets();
   document.getElementById('musicUrlInput').value = settings.url;
@@ -1704,6 +1869,8 @@ function initMusic() {
 
 // ============================================================
 // FILE UPLOAD - Musik dari Komputer
+// CATATAN: File lokal hanya bisa diputar selama halaman masih terbuka.
+// Blob URL TIDAK disimpan ke localStorage karena akan kedaluwarsa setelah halaman di-refresh.
 // ============================================================
 
 function handleFileSelect(event) {
@@ -1719,27 +1886,39 @@ function handleFileSelect(event) {
   // Tampilkan nama file
   document.getElementById('fileNameDisplay').textContent = file.name;
 
-  // Bikin URL object sementara
+  // Bikin URL object sementara (hanya berlaku untuk sesi ini)
   const url = URL.createObjectURL(file);
 
-  // Simpan ke settings
+  // HANYA untuk sesi saat ini: jangan simpan blob URL ke localStorage
+  // Hanya simpan metadata untuk referensi
   const settings = getMusicSettings();
-  settings.url = url;
-  settings.activePreset = -1;
+  // Jangan simpan blob URL - hanya simpan nama file sebagai referensi
   settings.fileName = file.name;
+  settings.activePreset = -1;
   saveMusicSettings(settings);
 
-  // Update player
+  // Update player langsung (tanpa localStorage)
   const player = document.getElementById('musicPlayer');
   player.src = url;
 
-  // Update UI
-  document.getElementById('musicUrlInput').value = 'file://' + file.name;
+  // Update UI input URL - tampilkan nama file saja (bukan file:// palsu)
+  document.getElementById('musicUrlInput').value = '🔊 File lokal: ' + file.name;
   document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
+
+  // Tampilkan peringatan ke user bahwa file lokal hanya untuk sesi ini
+  alert('💡 File lokal "' + file.name + '" hanya bisa diputar selama halaman masih terbuka.\n\nSetelah halaman di-refresh, file ini tidak bisa dimuat lagi.');
 
   // Kalau lagi play, langsung puter
   if (isPlaying) {
-    player.play().catch(() => {});
+    player.play().catch(err => handlePlayError(err));
+  } else {
+    // Otomatis play file yang baru dipilih
+    player.play().then(() => {
+      isPlaying = true;
+      document.getElementById('musicFab').classList.add('playing');
+      document.getElementById('musicFab').textContent = '🎶';
+      updateMusicStatus();
+    }).catch(err => handlePlayError(err));
   }
 
   // Update status
