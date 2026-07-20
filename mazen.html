@@ -652,6 +652,22 @@ body {
   flex: 1;
 }
 
+.file-upload-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.file-name {
+  font-size: 12px;
+  color: var(--text-light);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
 .preset-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -893,6 +909,14 @@ body {
       <button class="music-panel-close" onclick="toggleMusicPanel()">×</button>
     </div>
     <div class="music-panel-body">
+<div class="form-group">
+        <label>📁 Musik dari Komputer</label>
+        <input type="file" id="musicFileInput" accept="audio/*" style="display:none" onchange="handleFileSelect(event)" />
+        <div class="file-upload-row">
+          <button class="add-btn add-btn-small" onclick="document.getElementById('musicFileInput').click()">📂 Pilih File</button>
+          <span class="file-name" id="fileNameDisplay">Belum ada file</span>
+        </div>
+      </div>
       <div class="form-group">
         <label>🔗 URL Musik</label>
         <div class="url-input-row">
@@ -1679,6 +1703,50 @@ function initMusic() {
 }
 
 // ============================================================
+// FILE UPLOAD - Musik dari Komputer
+// ============================================================
+
+function handleFileSelect(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  // Cek format file
+  if (!file.type.startsWith('audio/')) {
+    alert('❌ File harus berupa audio (MP3, WAV, dll)');
+    return;
+  }
+
+  // Tampilkan nama file
+  document.getElementById('fileNameDisplay').textContent = file.name;
+
+  // Bikin URL object sementara
+  const url = URL.createObjectURL(file);
+
+  // Simpan ke settings
+  const settings = getMusicSettings();
+  settings.url = url;
+  settings.activePreset = -1;
+  settings.fileName = file.name;
+  saveMusicSettings(settings);
+
+  // Update player
+  const player = document.getElementById('musicPlayer');
+  player.src = url;
+
+  // Update UI
+  document.getElementById('musicUrlInput').value = 'file://' + file.name;
+  document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
+
+  // Kalau lagi play, langsung puter
+  if (isPlaying) {
+    player.play().catch(() => {});
+  }
+
+  // Update status
+  updateMusicStatus();
+}
+
+// ============================================================
 // INIT
 // ============================================================
 
@@ -1692,10 +1760,11 @@ async function init() {
   updateQuote();
   renderTasks();
 
-  await loadPrayerTimes();
+await loadPrayerTimes();
   updateProgress();
 
-  // Auto-refresh for music animation is handled by CSS
+  // Initialize music system
+  initMusic();
 }
 
 init();
